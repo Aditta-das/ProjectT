@@ -1,13 +1,11 @@
-from cProfile import label
-from tokenize import Special
-from xml.sax import SAXParseException
+from codecs import ignore_errors
 import numpy as np
 import pandas as pd
 import torch, os
 import torch.nn as nn
 import torchaudio
-from torchaudio import transforms
 from torch.utils.data import Dataset
+import config
 
 class MelSpectogram_log(nn.Module):
     def __init__(self, sample_rate, n_mels, win_length, hop_length):
@@ -51,12 +49,10 @@ class SpecAugment(nn.Module):
         self.sample_rate = sample_rate
 
         self.specaug = nn.Sequential(
-            torchaudio.transforms.FrequencyMasking(
-                freq_mask_param=freq_mask,
-            ),
-            torchaudio.transforms.TimeMasking(
-                time_mask_param=time_mask
-            )
+            torchaudio.transforms.FrequencyMasking(freq_mask_param=freq_mask),
+            torchaudio.transforms.TimeMasking(time_mask_param=time_mask),
+            torchaudio.transforms.FrequencyMasking(freq_mask_param=freq_mask),
+            torchaudio.transforms.TimeMasking(time_mask_param=time_mask)
         )
     
     def forward(self, x):
@@ -107,16 +103,25 @@ class AudioLabelTransform:
     
     def text_to_int(self, text):
         int_sequence = []
-        for char in text:
+        for char in text.lower():
             if char == ' ':
                 ch = self.char_mapping['<SPACE>']
             else:
                 ch = self.char_mapping[char]
             int_sequence.append(ch)
         return int_sequence
+    
+    def int_to_text(self, lbl):
+        sent = []
+        for i in lbl:
+            sent.append(self.int_mapping[i])
+        return ''.join(sent).replace('<SPACE>', ' ')
 
-# a = AudioLabelTransform().text_to_int("hello i am aditta das nishad")
+
+# a = AudioLabelTransform().text_to_int("HELLO I am aditta das nishad")
+# b = AudioLabelTransform().int_to_text(a)
 # print(a)
+# print(b)
 
 class SpeechDataset(Dataset):
     def __init__(self, file, valid=False):
@@ -151,18 +156,21 @@ class SpeechDataset(Dataset):
         return len(self.file)
 
     def __getitem__(self, idx):
-        data = pd.read_csv(self.file)
-        path = os.path.join(
-            '/home/aditta/Desktop/ProjectT/input/',
-            data["filename"].iloc[idx]
-        )
-        lbl_data = data["text"].iloc[idx]
-        waveform, sr = torchaudio.load(path)
-        aug = self.audio_transform(waveform)
-        audiolbl = self.label.text_to_int(lbl_data)
-        lbl_len = len(audiolbl)
-        spec_len = aug.shape[-1] // 2
         try:
+            data = pd.read_csv(self.file)
+            path = os.path.join(
+                '/home/aditta/Desktop/ProjectT/input/',
+                data["filename"].iloc[idx]
+            )
+            lbl_data = data["text"].iloc[idx]
+            waveform, sr = torchaudio.load(path)
+            aug = self.audio_transform(waveform)
+            aug = aug.clone().detach()
+            audiolbl = self.label.text_to_int(lbl_data)
+            audiolbl = torch.tensor(audiolbl, dtype=torch.long)
+            lbl_len = len(audiolbl)
+            spec_len = aug.shape[-1] // 2
+            
             if aug.shape[0] > 1:
                 raise Exception(f'Dual Channel, skip this file: {path}')
             if aug.shape[2] > 1650:
@@ -177,8 +185,32 @@ class SpeechDataset(Dataset):
             'spec_len': spec_len
         }
 
-from glob import glob
-from tqdm import tqdm
-file_path = glob("/home/aditta/Desktop/ProjectT/input/cv-other-dev/*")
-for idx, f in tqdm(enumerate(file_path), total=len(file_path)):
-    a = SpeechDataset("/home/aditta/Desktop/ProjectT/input/cv-other-dev.csv").__getitem__(idx)
+def collate_fn(data):
+    specs = []
+    labels = []
+    input_length, target_length = [], []
+    for d in data:
+        spec = d["spectogram"].to(config.device)
+        label = d["label"].to(config.device)
+        spec_len = d["spec_len"]
+        lbl_length = d["lbl_length"]
+
+        specs.append(spec.squeeze(0).tratranspose(0, 1))
+        labels.append(label)
+        input_length.append(spec_len)
+        target_length.append(lbl_length)
+    spec = nn.utils.rnn.pad_sequence(
+        specs, batch_first=True
+    ).unsqueeze(1).transpose(2, 3)
+    label = nn.utils.rnn.pad_sequence(
+        labels, batch_first=True
+    )
+    return specs, labels, torch.tensor(input_length, dtype=torch.long), torch.tensor(target_length, dtype=torch.long)
+
+# from glob import glob
+# from tqdm import tqdm
+# file_path = glob("/home/aditta/Desktop/ProjectT/input/cv-other-dev/*")
+# for idx, f in tqdm(enumerate(file_path), total=len(file_path)):
+# a = SpeechDataset("/home/aditta/Desktop/ProjectT/input/cv-other-dev.csv").__getitem__(3)
+# print(a)
+# print(collate_fn(a))
