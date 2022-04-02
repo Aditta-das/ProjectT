@@ -1,14 +1,15 @@
-from statistics import mode
 import torch
 import torch.nn as nn
 import os
 import config
 from dataset import SpeechDataset, collate_fn_padding
 from model import SpeechModel
+from tqdm import tqdm
 
 def train_fn(data_loader, model, optimizer, epoch, device=config.device):
     model.train()
-    for batch_idx, (data, target, input_len, spec_len) in enumerate(data_loader):
+    loop = tqdm(data_loader, position=0, leave=True)
+    for batch_idx, (data, target, input_len, spec_len) in (enumerate(loop)):
         data = data.to(config.device)
         # print(data.shape)
         target = target.to(config.device)
@@ -27,6 +28,7 @@ def train_fn(data_loader, model, optimizer, epoch, device=config.device):
 
         loss.backward()
         optimizer.step()
+        loop.set_postfix(loss=loss.item())
 
 
 if __name__ == "__main__":
